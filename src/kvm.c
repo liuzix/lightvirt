@@ -10,11 +10,12 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <linux/kvm.h>
-#include "archflags.h"
 
 #define KVM_DEBUG 1
 
 static uint32_t max_slots;
+
+size_t vcpu_mmap_size;
 
 static uint64_t *slot_bitmap;
 
@@ -43,7 +44,7 @@ static int slot_find_first_available(void)
 	uint64_t qword = slot_bitmap[i];
 
 	for (int j = 0; j < 64; j++) {
-		if (1ULL & (qword >> (uint64_t)j))
+		if ((1ULL & (qword >> (uint64_t)j)) == 0)
 			return j + 64 * i;
 	}
 
@@ -110,6 +111,14 @@ void vm_init(vm_t *vm)
 		slot_bitmap = malloc(max_slots / 8);
 		memset(slot_bitmap, 0, max_slots / 8);
 	}
+	
+	vcpu_mmap_size = ioctl(vm->sys_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
+
+	if (vcpu_mmap_size <= 0) {
+		perror("KVM_GET_VCPU_MMAP_SIZE");
+		exit(EXIT_FAILURE);
+	}
+
 }
 
 mem_t *vm_map_guest_physical(vm_t *vm, void *host_vaddr, addr_t guest_paddr, size_t len)
@@ -129,7 +138,6 @@ mem_t *vm_map_guest_physical(vm_t *vm, void *host_vaddr, addr_t guest_paddr, siz
 	region.guest_phys_addr = guest_paddr;
 	region.userspace_addr = (uint64_t)host_vaddr;
 	region.memory_size = len;
-	region.memory_size = len;
 
 	if (ioctl(vm->fd, KVM_SET_USER_MEMORY_REGION, &region) < 0) {
 		perror("KVM_SET_USER_MEMORY_REGION");
@@ -140,6 +148,27 @@ mem_t *vm_map_guest_physical(vm_t *vm, void *host_vaddr, addr_t guest_paddr, siz
 failed:
 	free(ret);
 	return NULL;
+}
+
+int vm_remap_guest_physical(vm_t *vm, mem_t *mem, void *host_vaddr,
+		addr_t guest_paddr, size_t len) {
+	assert(mem->valid);
+	assert(ACCESS_SLOT(mem->slot));
+
+	struct kvm_userspace_memory_region region;
+
+	region.slot = mem->slot;
+	region.flags = 0;
+	region.guest_phys_addr = guest_paddr;
+	region.userspace_addr = (uint64_t)host_vaddr;
+	region.memory_size = len;
+
+	if (ioctl(vm->fd, KVM_SET_USER_MEMORY_REGION, &region) < 0) {
+		perror("KVM_SET_USER_MEMORY_REGION");
+		return 0;
+	}
+
+	return 1;
 }
 
 void vm_unmap_guest_physical(vm_t *vm, mem_t *mem)
@@ -250,18 +279,18 @@ static void __vcpu_setup_long_mode(vcpu_t *vcpu)
 	vcpu->regs.rflags = 1 << 1;
 }
 
-void vcpu_init(vm_t *vm, vcpu_t *vcpu)
+vcpu_t *vcpu_init(vm_t *vm)
 {
-	vcpu->fd = ioctl(vm->fd, KVM_CREATE_VCPU, 0);
-	if (vcpu->fd < 0) {
-		perror("KVM_CREATE_VCPU");
+	vcpu_t *vcpu = calloc(1, sizeof(vcpu_t));
+	
+	if (!vcpu) {
+		perror("calloc vcpu_t");
 		exit(EXIT_FAILURE);
 	}
 
-	size_t vcpu_mmap_size = ioctl(vm->sys_fd, KVM_GET_VCPU_MMAP_SIZE, 0);
-
-	if (vcpu_mmap_size <= 0) {
-		perror("KVM_GET_VCPU_MMAP_SIZE");
+	vcpu->fd = ioctl(vm->fd, KVM_CREATE_VCPU, 0);
+	if (vcpu->fd < 0) {
+		perror("KVM_CREATE_VCPU");
 		exit(EXIT_FAILURE);
 	}
 
@@ -273,6 +302,8 @@ void vcpu_init(vm_t *vm, vcpu_t *vcpu)
 	}
 
 	__vcpu_setup_long_mode(vcpu);
+
+	return vcpu;
 }
 
 enum vcpu_exit_reason vcpu_run(vcpu_t *vcpu)
@@ -324,10 +355,26 @@ enum vcpu_exit_reason vcpu_run(vcpu_t *vcpu)
 		{
 			uint64_t hardware_entry_failure_reason =
 				vcpu->kvm_run->fail_entry.hardware_entry_failure_reason;
-			kvm_debug("Hardware failed entry reason: 0x%llx\n", hardware_entry_failure_reason);
+			kvm_debug("Hardware failed entry reason: 0x%llx\n",
+					hardware_entry_failure_reason);
 		}
 	default:
 		kvm_debug("KVM: unknown exit reason %x\n", exit_reason);
 		return VCPU_UNKNOWN;
 	}
+}
+
+void vcpu_destroy(vcpu_t *vcpu)
+{
+	if (munmap(vcpu->kvm_run, vcpu_mmap_size) < 0) {
+		perror("munmap kvm_run");
+		exit(EXIT_FAILURE);
+	}
+
+	if (close(vcpu->fd) < 0) {
+		perror("close vcpu fd");
+		exit(EXIT_FAILURE);
+	}
+
+	free(vcpu);
 }

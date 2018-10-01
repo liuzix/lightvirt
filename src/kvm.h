@@ -10,6 +10,14 @@ extern "C"
 #include <stddef.h>
 #include <linux/kvm.h>
 
+#include "archflags.h"
+
+#define SEGMENT_TYPE_CODE 11
+#define SEGMENT_TYPE_DATA 3
+
+#define VCPU_REG(v, r) (*(vcpu_access_gpregs(v, offsetof(struct kvm_regs, r))))
+#define VCPU_SREG(v, r) (*(vcpu_access_sregs(v, offsetof(struct kvm_sregs, r))))
+
 struct kvm_vm {
 	/* the fd for /dev/kvm */
 	int sys_fd;
@@ -45,8 +53,6 @@ struct kvm_vcpu {
 
 typedef struct kvm_vcpu vcpu_t;
 
-typedef uint64_t addr_t;
-
 /* initialize the vm struct */
 void vm_init(vm_t *vm);
 
@@ -54,13 +60,13 @@ void vm_init(vm_t *vm);
 mem_t *vm_map_guest_physical(vm_t *vm, void *host_vaddr,
 				addr_t guest_paddr, size_t len);
 
+int vm_remap_guest_physical(vm_t *vm, mem_t *mem, void *host_vaddr,
+		addr_t guest_paddr, size_t len);
+
 void vm_unmap_guest_physical(vm_t *vm, mem_t *mem);
 
 /* create a VCPU. It sets up segments, etc. */
-void vcpu_init(vm_t *vm, vcpu_t *vcpu);
-
-#define SEGMENT_TYPE_CODE 11
-#define SEGMENT_TYPE_DATA 3
+vcpu_t *vcpu_init(vm_t *vm);
 
 enum segment {CS, DS, ES, FS, GS, SS};
 
@@ -77,9 +83,6 @@ static inline uint64_t *vcpu_access_sregs(vcpu_t *vcpu, size_t offset)
 	return (uint64_t *)(((char *)&vcpu->sregs) + offset);
 }
 
-#define VCPU_REG(v, r) (*(vcpu_access_gpregs(v, offsetof(struct kvm_regs, r))))
-#define VCPU_SREG(v, r) (*(vcpu_access_sregs(v, offsetof(struct kvm_sregs, r))))
-
 enum vcpu_exit_reason {
 	VCPU_HYPERCALL,
 	VCPU_PAGEFAULT,
@@ -92,6 +95,7 @@ enum vcpu_exit_reason {
 /* run a vcpu until exit */
 enum vcpu_exit_reason vcpu_run(vcpu_t *cpu);
 
+void vcpu_destroy(vcpu_t *vcpu);
 #ifdef __cplusplus
 }
 #endif

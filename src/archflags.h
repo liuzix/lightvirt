@@ -1,6 +1,10 @@
 #ifndef ARCHFLAGS_H
 #define ARCHFLAGS_H
 
+#include <stdint.h>
+#include <stdbool.h>
+
+typedef uint64_t addr_t;
 /* CR0 bits */
 #define CR0_PE 1u
 #define CR0_MP (1U << 1)
@@ -54,5 +58,21 @@
 #define PDE64_DIRTY (1U << 6)
 #define PDE64_PS (1U << 7)
 #define PDE64_G (1U << 8)
+
+struct pageTableEntry {
+    bool present : 1;
+    bool writable : 1;
+    bool user : 1;
+    bool writeThrough : 1;
+    bool cacheDisabled : 1;
+    bool accessed : 1;
+    bool dirty : 1;
+    bool hugePage : 1;
+    bool global : 1;
+    int software : 3;
+    uint64_t address : 40;
+    int reserved : 12;
+} __attribute__((packed));
+
 
 #endif
