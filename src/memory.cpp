@@ -10,7 +10,7 @@ DefaultHostMemoryMapper DefaultHostMemoryMapper::instance;
 void *DefaultHostMemoryMapper::operator()(size_t len)
 {
 	void *hostVirtualAddr = mmap(NULL, len, PROT_READ | PROT_WRITE,
-		 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+		MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
 
 	if (hostVirtualAddr == MAP_FAILED) {
 		console->error("Cannot mmap memory, length = {}", len);
@@ -111,6 +111,30 @@ void MemoryPool::freePhysicalMemoryBlock(addr_t addr, size_t len)
 	}
 }
 
+void *MemoryPool::getHostVirtualFromPhysical(addr_t addr) const
+{
+	uint64_t offset = addr - physBase;
+	if (offset < 0 || offset >= size) {
+		console->error("Physical address 0x{:x} out of bound",
+				addr);
+		std::abort();
+	}
+
+	return (char *)virtBase + offset;
+}
+
+addr_t MemoryPool::getPhysicalFromHostVirtual(void *hostVirtual) const
+{
+	uintptr_t offset = (char *)hostVirtual - (char *)virtBase;
+	if (offset < 0 || offset >= size) {
+		console->error("Physical address 0x{:x} out of bound",
+				(uintptr_t)hostVirtual);
+		std::abort();
+	}
+
+	return physBase + offset;
+}
+
 MemoryRegion::MemoryRegion(addr_t guestVirt, size_t _len)
 	: guestVirtualAddr(guestVirt), len(_len), isKernel(false)
 {
@@ -120,4 +144,63 @@ MemoryRegion::MemoryRegion(addr_t guestVirt, size_t _len)
 	physicalPages.resize(nPages);
 }
 
+MemorySpace::MemorySpace(AbstractMemoryPool *_memoryPool)
+	: memoryPool(_memoryPool)
+{
+	pageTableP = memoryPool->getPhysicalMemoryBlock(PAGE_SIZE);
+	pageTableV = memoryPool->getHostVirtualFromPhysical(pageTableP);
+	pageTablePages.emplace_back(pageTableP, pageTableV);
+}
 
+bool MemorySpace::fault(addr_t guestVirtualPage, uint32_t errorcode)
+{
+	std::lock_guard<std::recursive_mutex> guard(lock);
+
+	auto region = regions.upper_bound(guestVirtualPage);
+	if (region == regions.begin()) {
+		console->warn("Unresolved page fault at 0x{:x}",
+				guestVirtualPage);
+		return false;
+	}
+
+	region--;
+	
+	std::lock_guard regionGuard = std::lock_guard((*region)->lock);
+
+}
+
+
+PageTableEntry *MemorySpace::getPTE(addr_t guestVirtual, bool create)
+{
+	std::lock_guard<std::recursive_mutex> guard(lock);
+
+	auto *cur = castGuestPhysical<PageTableEntry>(guestVirtual);
+	uint64_t nBits = 39;
+
+	while ((1ULL << nBits) >= PAGE_SIZE) {
+		uint64_t index = (guestVirtual >> nBits) & 0b111111111;
+
+		if ((1ULL << nBits) == PAGE_SIZE)
+			return &cur[index];
+
+		nBits -= 9;
+		PageTableEntry &entry = cur[index]; 
+		if (!entry.present) {
+			if (!create) return nullptr;
+
+			/* allocate a new page */
+			addr_t newPage =
+				memoryPool->getPhysicalMemoryBlock(PAGETABLE_SIZE);
+			entry = DEFAULT_PTE;
+			entry.address = newPage / PAGETABLE_SIZE;
+			cur = castGuestPhysical<PageTableEntry>(newPage);
+
+			pageTablePages.emplace_back(newPage, cur);
+		} else {
+			cur = castGuestPhysical<PageTableEntry>(entry.address * PAGETABLE_SIZE);
+		}
+	}
+	
+	console->error("shouldn't have reached here!");
+	std::abort();
+}

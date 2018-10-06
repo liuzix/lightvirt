@@ -100,6 +100,11 @@ void vm_init(vm_t *vm)
 		exit(EXIT_FAILURE);
 	}
 
+	if (ioctl(vm->fd, KVM_SET_TSS_ADDR, 0xfffbd000) < 0) {
+                perror("KVM_SET_TSS_ADDR");
+		exit(EXIT_FAILURE);
+	}
+
 	max_slots = ioctl(vm->sys_fd, KVM_CHECK_EXTENSION, KVM_CAP_NR_MEMSLOTS);
 	if (max_slots < 0) {
 		perror("KVM_CHECK_EXTENSION");
@@ -259,12 +264,12 @@ static void __vcpu_store_regs(vcpu_t *vcpu)
 /* sets up basic execution environment for long mode */
 static void __vcpu_setup_long_mode(vcpu_t *vcpu)
 {
-	memset(&vcpu->sregs, 0, sizeof(vcpu->sregs));
+	//memset(&vcpu->sregs, 0, sizeof(vcpu->sregs));
 	memset(&vcpu->regs, 0, sizeof(vcpu->regs));
 
 	vcpu->sregs.cr4 = CR4_PAE;
 	vcpu->sregs.cr0 = CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_WP | CR0_AM | CR0_PG;
-	vcpu->sregs.efer = EFER_SCE | EFER_LME | EFER_LMA;
+	vcpu->sregs.efer = /*EFER_SCE |*/ EFER_LME | EFER_LMA;
 
 	/* load the default segment registers
 	 * might be overwritten when GDT is set up */
@@ -301,6 +306,7 @@ vcpu_t *vcpu_init(vm_t *vm)
 		exit(EXIT_FAILURE);
 	}
 
+	__vcpu_load_regs(vcpu);
 	__vcpu_setup_long_mode(vcpu);
 
 	return vcpu;
@@ -319,7 +325,7 @@ enum vcpu_exit_reason vcpu_run(vcpu_t *vcpu)
 	__vcpu_load_regs(vcpu);
 
 	uint32_t exit_reason = vcpu->kvm_run->exit_reason;
-
+	kvm_debug("KVM: exit_reason %d\n", exit_reason);
 	switch (exit_reason) {
 	case KVM_EXIT_HLT:
 		kvm_debug("KVM: hypercall received\n");
@@ -350,6 +356,7 @@ enum vcpu_exit_reason vcpu_run(vcpu_t *vcpu)
 			uint64_t hardware_exit_reason =
 				vcpu->kvm_run->hw.hardware_exit_reason;
 			kvm_debug("Hardware exit reason: 0x%llx\n", hardware_exit_reason);
+			return VCPU_UNKNOWN;
 		}
 	case KVM_EXIT_FAIL_ENTRY: 
 		{
@@ -357,9 +364,10 @@ enum vcpu_exit_reason vcpu_run(vcpu_t *vcpu)
 				vcpu->kvm_run->fail_entry.hardware_entry_failure_reason;
 			kvm_debug("Hardware failed entry reason: 0x%llx\n",
 					hardware_entry_failure_reason);
+			return VCPU_UNKNOWN;
 		}
 	default:
-		kvm_debug("KVM: unknown exit reason %x\n", exit_reason);
+		kvm_debug("KVM: unknown exit reason 0x%x\n", exit_reason);
 		return VCPU_UNKNOWN;
 	}
 }

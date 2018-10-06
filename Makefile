@@ -4,21 +4,27 @@ CFLAGS = -Wall -MMD -MP -g -std=gnu99
 CXXFLAGS = -Wall -MMD -MP -g -std=c++17
 OUTPUTDIR = build
 
-KERNEL_LDFLAGS = -ffreestanding -nostdlib -T kernel.ld
+KERNEL_LDFLAGS = -ffreestanding -nostdlib -T kernel.ld -fPIC
 
 target = lightvirt
 csrc = kvm.c
 
-ccsrc = memory.cpp
-ccsrc += main.cpp
+ccsrc = memory.cpp main.cpp fs.cpp
+
+ksrc = kernel.c
+kasm = entry.S idt.S
+
 
 cobj = $(addprefix $(OUTPUTDIR)/,$(patsubst %.c,%.o,$(csrc)))
 ccobj = $(addprefix $(OUTPUTDIR)/,$(patsubst %.cpp,%.o,$(ccsrc)))
+kobj = $(addprefix $(OUTPUTDIR)/,$(patsubst %.c,%.o,$(ksrc)))
+kasmobj = $(addprefix $(OUTPUTDIR)/,$(patsubst %.S,%.o,$(kasm)))
+
 dep = $(cobj:.o=.d)
 dep += $(ccobj:.o=.d)
+dep += $(kobj:.o=.d)
 
-
-all: $(target) kernel
+all: $(target) kernel.bin
 
 
 $(target): $(cobj) $(ccobj)
@@ -30,10 +36,17 @@ $(cobj) : $(OUTPUTDIR)/%.o : src/%.c
 $(ccobj) : $(OUTPUTDIR)/%.o : src/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-kernel: src/kernel.c
-	$(CC) $(CFLAGS) -c $< -o $(OUTPUTDIR)/kernel.o
-	$(CC) $(KERNEL_LDFLAGS) $(OUTPUTDIR)/kernel.o -o kernel.bin
+kernel.bin: $(kobj) $(kasmobj)
+	$(CC) $(KERNEL_LDFLAGS) $^ -o kernel.bin
 
+$(kobj) : $(OUTPUTDIR)/%.o : src/%.c
+	$(CC) $(CFLAGS) -fPIC -c $< -o $@
+
+$(kasmobj) : $(OUTPUTDIR)/%.o : src/%.S
+	$(CC) $(CFLAGS) -fPIC -c $< -o $@
+
+src/idt.S: src/idt_gen.pl
+	src/idt_gen.pl > src/idt.S
 
 .PHONY: clean
 

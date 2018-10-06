@@ -59,7 +59,7 @@ typedef uint64_t addr_t;
 #define PDE64_PS (1U << 7)
 #define PDE64_G (1U << 8)
 
-struct pageTableEntry {
+struct PageTableEntry {
     bool present : 1;
     bool writable : 1;
     bool user : 1;
@@ -74,5 +74,20 @@ struct pageTableEntry {
     int reserved : 12;
 } __attribute__((packed));
 
+#define DEFAULT_PTE            \
+(struct PageTableEntry){       \
+	.present = true,       \
+	.writable = true,     \
+	.user = true,          \
+	.writeThrough = false, \
+	.cacheDisabled = false,\
+	.accessed = false,     \
+	.dirty = false,        \
+	.hugePage = false,     \
+	.global = false,       \
+	.software = 0,         \
+	.address = 0,          \
+	.reserved = 0,         \
+}                              \
 
 #endif

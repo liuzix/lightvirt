@@ -10,8 +10,10 @@
 #include "kvm.h"
 #include "archflags.h"
 #include "log.hpp"
+#include "utils.hpp"
 
 #define PAGE_SIZE 4096
+#define PAGETABLE_SIZE 4096
 
 inline void checkPageMultiple(size_t len)
 {
@@ -36,30 +38,22 @@ class AbstractMemoryPool {
 public:
 	virtual addr_t getPhysicalMemoryBlock(size_t len) = 0;
 	virtual void freePhysicalMemoryBlock(addr_t addr, size_t len) = 0;
+	virtual void *getHostVirtualFromPhysical(addr_t addr) const = 0;
+	virtual addr_t getPhysicalFromHostVirtual(void *hostVirtual) const = 0;
 };
 
 struct GuestPhysicalPage {
 	void *hostVirtual;
 	addr_t guestPhysical;
+
+	GuestPhysicalPage(addr_t guest, void *host)
+	{
+		guestPhysical = guest;
+		hostVirtual = host;
+	}
 };
 
 using GuestPhysicalPagePtr = std::shared_ptr<GuestPhysicalPage>;
-
-template <typename BlockType>
-struct MemoryBlockComparator {
-	using is_transparent = void;
-	using KeyType =
-		typename std::result_of<decltype(&BlockType::getKey)(BlockType)>::type;	
-
-	bool operator()(const BlockType &lhs, const BlockType &rhs) const
-	{ return lhs.guestPhysical < rhs.guestPhysical; }
-
-	bool operator()(const KeyType &physical, const BlockType &blk) const
-	{ return physical < blk.guestPhysical; }
-
-	bool operator()(const BlockType &blk, const KeyType &physical) const
-	{ return blk.guestPhysical < physical; }
-};
 
 class MemoryPool: public AbstractMemoryPool {
 private:
@@ -89,6 +83,11 @@ public:
 
 	virtual void freePhysicalMemoryBlock(addr_t addr, size_t len);
 
+
+	virtual void *getHostVirtualFromPhysical(addr_t addr) const;
+
+	virtual addr_t getPhysicalFromHostVirtual(void *hostVirtual) const;
+
 private:
 	auto getBlockIterator(addr_t addr, size_t len);
 };
@@ -98,6 +97,7 @@ class MemorySpace;
 
 class MemoryRegion {
 private:
+	std::recursive_mutex lock;
 	addr_t guestVirtualAddr;
 	size_t len;
 	
@@ -110,7 +110,7 @@ public:
 
 	MemoryRegion(MemoryRegion &) = delete; // TODO: delete for now
 
-	bool fault(addr_t guestVirtualPage);
+	virtual	void fault(addr_t guestVirtualPage, uint32_t errorcode) = 0;
 
 	void setMemorySpace(MemorySpace *_memorySpace)
 	{ memorySpace = _memorySpace; }
@@ -120,18 +120,45 @@ public:
 
 	addr_t getKey() const
 	{ return guestVirtualAddr; }
+
+private:
+	virtual PageTableEntry *mapPage(size_t offset) = 0;
+
+	friend class MemorySpace;
+
 };
 
 class MemorySpace {
 private:
+	std::recursive_mutex lock;
 	void *pageTableV;
 	addr_t pageTableP;
-	std::set<MemoryRegion, MemoryBlockComparator<MemoryRegion>> regions;
+
+	using MemoryRegionPtr = ComparablePointerAdapter<std::shared_ptr<MemoryRegion>>;
+	std::set<MemoryRegionPtr, MemoryBlockComparator<MemoryRegionPtr>> regions;
+	AbstractMemoryPool *memoryPool;
+	std::vector<GuestPhysicalPage> pageTablePages;
 	// TODO: we need a task list here to flush tlbs
 	
 public:
+	MemorySpace(AbstractMemoryPool *_memoryPool);
+
 	void apply(vcpu_t *vcpu);
+
 	void flushTlb(addr_t guestVirtualPage);
+
+	bool fault(addr_t guestVirtualPage, uint32_t errorcode);
+private:
+	PageTableEntry *getPTE(addr_t guestVirtual, bool create = false);
+
+	template <typename T>
+	T *castGuestPhysical(addr_t addr)
+	{
+		return static_cast<T *>
+			(memoryPool->getHostVirtualFromPhysical(addr));
+	}
+
+	friend class MemoryRegion;
 };
 
 #endif

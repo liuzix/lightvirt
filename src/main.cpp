@@ -29,7 +29,10 @@ int main(int argc, char **argv)
 	vcpu_t *vcpu = vcpu_init(&vm);
 
 	VCPU_REG(vcpu, rax) = 1000;
-	
+
+	//for (;;) {
+		vcpu_run(vcpu);
+	//}
 	vcpu_destroy(vcpu);
 	return 0;
 }
